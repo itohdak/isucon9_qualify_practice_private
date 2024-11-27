@@ -1354,6 +1354,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	select {
 	case lock[rb.ItemID] <- struct{}{}:
 		defer func() { <-lock[rb.ItemID] }()
+
 		tx := dbx.MustBegin()
 
 		targetItem := Item{}
@@ -1383,6 +1384,19 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		wg := new(sync.WaitGroup)
+		var pstr *APIPaymentServiceTokenRes
+		wg.Add(1)
+		go func() {
+			pstr, err = APIPaymentToken(getPaymentServiceURL(), &APIPaymentServiceTokenReq{
+				ShopID: PaymentServiceIsucariShopID,
+				Token:  rb.Token,
+				APIKey: PaymentServiceIsucariAPIKey,
+				Price:  targetItem.Price,
+			})
+			wg.Done()
+		}()
+
 		seller := User{}
 		err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", targetItem.SellerID)
 		if err == sql.ErrNoRows {
@@ -1397,6 +1411,18 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			tx.Rollback()
 			return
 		}
+
+		var scr *APIShipmentCreateRes
+		wg.Add(1)
+		go func() {
+			scr, err = APIShipmentCreate(getShipmentServiceURL(), &APIShipmentCreateReq{
+				ToAddress:   buyer.Address,
+				ToName:      buyer.AccountName,
+				FromAddress: seller.Address,
+				FromName:    seller.AccountName,
+			})
+			wg.Done()
+		}()
 
 		category, err := getCategoryByID(tx, targetItem.CategoryID)
 		if err != nil {
@@ -1449,33 +1475,23 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		scr, err := APIShipmentCreate(getShipmentServiceURL(), &APIShipmentCreateReq{
-			ToAddress:   buyer.Address,
-			ToName:      buyer.AccountName,
-			FromAddress: seller.Address,
-			FromName:    seller.AccountName,
-		})
-		if err != nil {
+		wg.Wait()
+
+		/* if err != nil {
 			log.Print(err)
 			outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
 			tx.Rollback()
 
 			return
-		}
+		} */
 
-		pstr, err := APIPaymentToken(getPaymentServiceURL(), &APIPaymentServiceTokenReq{
-			ShopID: PaymentServiceIsucariShopID,
-			Token:  rb.Token,
-			APIKey: PaymentServiceIsucariAPIKey,
-			Price:  targetItem.Price,
-		})
-		if err != nil {
+		/* if err != nil {
 			log.Print(err)
 
 			outputErrorMsg(w, http.StatusInternalServerError, "payment service is failed")
 			tx.Rollback()
 			return
-		}
+		} */
 
 		if pstr.Status == "invalid" {
 			outputErrorMsg(w, http.StatusBadRequest, "カード情報に誤りがあります")
