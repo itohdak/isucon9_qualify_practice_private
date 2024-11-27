@@ -13,14 +13,14 @@ bin
 go
 local
 
-webapp/nodejs/
-webapp/perl/
-webapp/php/
-webapp/python/
-webapp/ruby/
-webapp/rust/
-!webapp/go/
-!webapp/sql/
+isucari/webapp/nodejs/
+isucari/webapp/perl/
+isucari/webapp/php/
+isucari/webapp/python/
+isucari/webapp/ruby/
+isucari/webapp/rust/
+!isucari/webapp/go/
+!isucari/webapp/sql/
 
 # 環境変数のファイル名に合わせること
 env.sh
@@ -33,3 +33,6 @@ env.sh
 
 pprotein
 pprotein-agent
+
+add_hosts.sh
+xbuild/
