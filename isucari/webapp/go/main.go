@@ -2074,10 +2074,11 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	}
 	tx.Commit()
 
-	userSimpleCached, _ := userSimpleCache.Load(seller.ID)
-	userSimple := userSimpleCached.(UserSimple)
-	userSimple.NumSellItems += 1
-	userSimpleCache.Store(seller.ID, userSimple)
+	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
+		userSimple := userSimpleCached.(UserSimple)
+		userSimple.NumSellItems += 1
+		userSimpleCache.Store(seller.ID, userSimple)
+	}
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resSell{ID: itemID})
