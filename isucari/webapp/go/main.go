@@ -396,6 +396,7 @@ var (
 	allCategories             = []Category{}
 	categoryCacheByID         = map[int]Category{}
 	categoryIDCacheByParentID = map[int][]int{}
+	parentCategoryCacheByID   = map[int]Category{}
 )
 
 func getAllCategoryForCache() error {
@@ -408,6 +409,13 @@ func getAllCategoryForCache() error {
 	for _, category := range categories {
 		categoryCacheByID[category.ID] = category
 		categoryIDCacheByParentID[category.ParentID] = append(categoryIDCacheByParentID[category.ParentID], category.ID)
+	}
+	for _, category := range categories {
+		current := category
+		for current.ParentID != 0 {
+			current = categoryCacheByID[current.ParentID]
+		}
+		parentCategoryCacheByID[category.ID] = current
 	}
 	return nil
 }
@@ -445,6 +453,7 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
 	category = categoryCacheByID[categoryID]
+	category.ParentCategoryName = parentCategoryCacheByID[categoryID].CategoryName
 	return category, err
 }
 
