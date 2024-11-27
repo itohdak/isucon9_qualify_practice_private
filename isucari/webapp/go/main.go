@@ -443,7 +443,7 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 var userSimpleCache = sync.Map{}
 
 func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
-	if userSimpleCached, found := userSimpleCache.Load(userID); found {
+	if userSimpleCached, found := userSimpleCache.Load(userID); !found {
 		user := User{}
 		err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
 		if err != nil {
