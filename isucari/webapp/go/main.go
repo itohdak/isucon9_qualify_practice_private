@@ -1049,7 +1049,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 			if shippingStatusCached, found := shippingStatusCache.Load(shipping.ReserveID); found {
 				itemDetail.TransactionEvidenceID = transactionEvidence.ID
 				itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-				itemDetail.ShippingStatus = shippingStatusCached.(APIShipmentStatusRes).Status
+				itemDetail.ShippingStatus = shippingStatusCached.(*APIShipmentStatusRes).Status
 			} else {
 				ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
 					ReserveID: shipping.ReserveID,
@@ -1678,7 +1678,7 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if shippingStatusCached, found := shippingStatusCache.Load(shipping.ReserveID); found {
-		shippingStatus := shippingStatusCached.(APIShipmentStatusRes)
+		shippingStatus := shippingStatusCached.(*APIShipmentStatusRes)
 		shippingStatus.Status = ShippingsStatusWaitPickup
 		shippingStatusCache.Store(shipping.ReserveID, shippingStatus)
 	}
