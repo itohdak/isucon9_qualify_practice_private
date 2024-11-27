@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -439,15 +440,22 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 	return user, http.StatusOK, ""
 }
 
+var userSimpleCache = sync.Map{}
+
 func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
-	user := User{}
-	err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
-	if err != nil {
-		return userSimple, err
+	if userSimpleCached, found := userSimpleCache.Load(userID); !found {
+		user := User{}
+		err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
+		if err != nil {
+			return userSimple, err
+		}
+		userSimple.ID = user.ID
+		userSimple.AccountName = user.AccountName
+		userSimple.NumSellItems = user.NumSellItems
+		userSimpleCache.Store(userID, userSimple)
+	} else {
+		userSimple = userSimpleCached.(UserSimple)
 	}
-	userSimple.ID = user.ID
-	userSimple.AccountName = user.AccountName
-	userSimple.NumSellItems = user.NumSellItems
 	return userSimple, err
 }
 
@@ -2065,6 +2073,12 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Commit()
+
+	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
+		userSimple := userSimpleCached.(UserSimple)
+		userSimple.NumSellItems += 1
+		userSimpleCache.Store(seller.ID, userSimple)
+	}
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resSell{ID: itemID})
