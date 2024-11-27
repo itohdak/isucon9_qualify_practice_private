@@ -566,7 +566,7 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, itemID := range itemIDs {
-		lock[itemID] = make(chan int, 1)
+		lock[itemID] = make(chan struct{}, 1)
 	}
 }
 
@@ -1328,7 +1328,7 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 	w.Write(shipping.ImgBinary)
 }
 
-var lock = map[int64](chan int){}
+var lock = map[int64](chan struct{}){}
 
 func postBuy(w http.ResponseWriter, r *http.Request) {
 	rb := reqBuy{}
@@ -1352,7 +1352,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case lock[rb.ItemID] <- 1:
+	case lock[rb.ItemID] <- struct{}{}:
 		defer func() { <-lock[rb.ItemID] }()
 		tx := dbx.MustBegin()
 
@@ -2092,7 +2092,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Commit()
-	lock[itemID] = make(chan int, 1)
+	lock[itemID] = make(chan struct{}, 1)
 
 	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
 		userSimple := userSimpleCached.(UserSimple)
