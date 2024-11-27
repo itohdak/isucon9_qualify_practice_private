@@ -1318,7 +1318,7 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 	w.Write(shipping.ImgBinary)
 }
 
-var lock = make(chan struct{}, 1)
+var lock = make(chan int64)
 
 func postBuy(w http.ResponseWriter, r *http.Request) {
 	rb := reqBuy{}
@@ -1342,7 +1342,7 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case lock <- struct{}{}:
+	case lock <- rb.ItemID:
 		defer func() { <-lock }()
 		tx := dbx.MustBegin()
 
