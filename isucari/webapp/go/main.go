@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+	"github.com/kaz/pprotein/integration/standalone"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -290,6 +291,8 @@ func init() {
 }
 
 func main() {
+	go standalone.Integrate(":8888")
+
 	host := os.Getenv("MYSQL_HOST")
 	if host == "" {
 		host = "127.0.0.1"
@@ -513,6 +516,12 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(res)
+
+	go func() {
+		if _, err := http.Get("http://pprotein.maca.jp:9000/api/group/collect"); err != nil {
+			log.Printf("failed to communicate with pprotein: %v", err)
+		}
+	}()
 }
 
 func getNewItems(w http.ResponseWriter, r *http.Request) {
