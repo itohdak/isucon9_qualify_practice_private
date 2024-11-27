@@ -558,6 +558,16 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 			log.Printf("failed to communicate with pprotein: %v", err)
 		}
 	}()
+
+	var itemIDs = []int64{}
+	if err := dbx.Select(&itemIDs, "SELECT id FROM `items`"); err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	for _, itemID := range itemIDs {
+		lock[itemID] = make(chan int, 1)
+	}
 }
 
 func getNewItems(w http.ResponseWriter, r *http.Request) {
@@ -2082,6 +2092,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Commit()
+	lock[itemID] = make(chan int, 1)
 
 	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
 		userSimple := userSimpleCached.(UserSimple)
