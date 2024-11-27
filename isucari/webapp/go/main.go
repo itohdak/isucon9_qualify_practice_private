@@ -1357,6 +1357,8 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 
 		tx := dbx.MustBegin()
 
+		now := time.Now()
+
 		targetItem := Item{}
 		err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", rb.ItemID)
 		if err == sql.ErrNoRows {
@@ -1383,6 +1385,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			tx.Rollback()
 			return
 		}
+
+		log.Printf("select items for update: %s", time.Since(now))
+		now = time.Now()
 
 		wg := new(sync.WaitGroup)
 		var pstr *APIPaymentServiceTokenRes
@@ -1411,6 +1416,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			tx.Rollback()
 			return
 		}
+
+		log.Printf("select users for update: %s", time.Since(now))
+		now = time.Now()
 
 		var scr *APIShipmentCreateRes
 		wg.Add(1)
@@ -1461,6 +1469,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		log.Printf("insert into transaction_evidences: %s", time.Since(now))
+		now = time.Now()
+
 		_, err = tx.Exec("UPDATE `items` SET `buyer_id` = ?, `status` = ?, `updated_at` = ? WHERE `id` = ?",
 			buyer.ID,
 			ItemStatusTrading,
@@ -1475,7 +1486,13 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		log.Printf("update item: %s", time.Since(now))
+		now = time.Now()
+
 		wg.Wait()
+
+		log.Printf("wait for external calls: %s", time.Since(now))
+		now = time.Now()
 
 		/* if err != nil {
 			log.Print(err)
@@ -1531,6 +1548,9 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 			tx.Rollback()
 			return
 		}
+
+		log.Printf("insert into shippings: %s", time.Since(now))
+		now = time.Now()
 
 		tx.Commit()
 
