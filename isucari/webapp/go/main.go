@@ -1635,9 +1635,25 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	item := Item{}
+	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	if err == sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusNotFound, "item not found")
+		return
+	}
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if item.Status != ItemStatusTrading {
+		outputErrorMsg(w, http.StatusForbidden, "商品が取引中ではありません")
+		return
+	}
+
 	tx := dbx.MustBegin()
 
-	item := Item{}
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
@@ -1771,9 +1787,24 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx := dbx.MustBegin()
-
 	item := Item{}
+	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	if err == sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusNotFound, "items not found")
+		return
+	}
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if item.Status != ItemStatusTrading {
+		outputErrorMsg(w, http.StatusForbidden, "商品が取引中ではありません")
+		return
+	}
+
+	tx := dbx.MustBegin()
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
@@ -1919,8 +1950,24 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx := dbx.MustBegin()
 	item := Item{}
+	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
+	if err == sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusNotFound, "items not found")
+		return
+	}
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if item.Status != ItemStatusTrading {
+		outputErrorMsg(w, http.StatusForbidden, "商品が取引中ではありません")
+		return
+	}
+
+	tx := dbx.MustBegin()
 	err = tx.Get(&item, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "items not found")
@@ -2210,9 +2257,25 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targetItem := Item{}
+	err = dbx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", itemID)
+	if err == sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusNotFound, "item not found")
+		return
+	}
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if targetItem.SellerID != user.ID {
+		outputErrorMsg(w, http.StatusForbidden, "自分の商品以外は編集できません")
+		return
+	}
+
 	tx := dbx.MustBegin()
 
-	targetItem := Item{}
 	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", itemID)
 	if err == sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusNotFound, "item not found")
