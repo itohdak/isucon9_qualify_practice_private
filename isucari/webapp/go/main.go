@@ -566,7 +566,7 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, itemID := range itemIDs {
-		lock[itemID] = make(chan struct{}, 1)
+		lock[itemID] = make(chan struct{}, 3)
 	}
 }
 
@@ -2168,7 +2168,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Commit()
-	lock[itemID] = make(chan struct{}, 1)
+	lock[itemID] = make(chan struct{}, 3)
 
 	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
 		userSimple := userSimpleCached.(UserSimple)
