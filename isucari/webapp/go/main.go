@@ -1359,6 +1359,29 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targetItem := Item{}
+	err = dbx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ?", rb.ItemID)
+	if err == sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusNotFound, "item not found")
+		return
+	}
+	if err != nil {
+		log.Print(err)
+
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if targetItem.Status != ItemStatusOnSale {
+		outputErrorMsg(w, http.StatusForbidden, "item is not for sale")
+		return
+	}
+
+	if targetItem.SellerID == buyer.ID {
+		outputErrorMsg(w, http.StatusForbidden, "自分の商品は買えません")
+		return
+	}
+
 	select {
 	case lock[rb.ItemID] <- struct{}{}:
 		defer func() { <-lock[rb.ItemID] }()
