@@ -558,6 +558,16 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 			log.Printf("failed to communicate with pprotein: %v", err)
 		}
 	}()
+
+	var itemIDs = []int64{}
+	if err := dbx.Select(&itemIDs, "SELECT id FROM `items`"); err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	for _, itemID := range itemIDs {
+		lock[itemID] = make(chan struct{}, 1)
+	}
 }
 
 func getNewItems(w http.ResponseWriter, r *http.Request) {
@@ -890,6 +900,8 @@ func getUserItems(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(rui)
 }
 
+var shippingStatusCache sync.Map
+
 func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 	user, errCode, errMsg := getUser(r)
@@ -1034,19 +1046,25 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 				tx.Rollback()
 				return
 			}
-			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: shipping.ReserveID,
-			})
-			if err != nil {
-				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
-				tx.Rollback()
-				return
+			if shippingStatusCached, found := shippingStatusCache.Load(shipping.ReserveID); found {
+				itemDetail.TransactionEvidenceID = transactionEvidence.ID
+				itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
+				itemDetail.ShippingStatus = shippingStatusCached.(*APIShipmentStatusRes).Status
+			} else {
+				ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
+					ReserveID: shipping.ReserveID,
+				})
+				if err != nil {
+					log.Print(err)
+					outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
+					tx.Rollback()
+					return
+				}
+				itemDetail.TransactionEvidenceID = transactionEvidence.ID
+				itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
+				itemDetail.ShippingStatus = ssr.Status
+				shippingStatusCache.Store(shipping.ReserveID, ssr)
 			}
-
-			itemDetail.TransactionEvidenceID = transactionEvidence.ID
-			itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-			itemDetail.ShippingStatus = ssr.Status
 		}
 
 		itemDetails = append(itemDetails, itemDetail)
@@ -1318,6 +1336,8 @@ func getQRCode(w http.ResponseWriter, r *http.Request) {
 	w.Write(shipping.ImgBinary)
 }
 
+var lock = map[int64](chan struct{}){}
+
 func postBuy(w http.ResponseWriter, r *http.Request) {
 	rb := reqBuy{}
 
@@ -1339,172 +1359,215 @@ func postBuy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx := dbx.MustBegin()
+	select {
+	case lock[rb.ItemID] <- struct{}{}:
+		defer func() { <-lock[rb.ItemID] }()
 
-	targetItem := Item{}
-	err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", rb.ItemID)
-	if err == sql.ErrNoRows {
-		outputErrorMsg(w, http.StatusNotFound, "item not found")
-		tx.Rollback()
-		return
-	}
-	if err != nil {
-		log.Print(err)
+		tx := dbx.MustBegin()
 
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
+		now := time.Now()
 
-	if targetItem.Status != ItemStatusOnSale {
+		targetItem := Item{}
+		err = tx.Get(&targetItem, "SELECT * FROM `items` WHERE `id` = ? FOR UPDATE", rb.ItemID)
+		if err == sql.ErrNoRows {
+			outputErrorMsg(w, http.StatusNotFound, "item not found")
+			tx.Rollback()
+			return
+		}
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		if targetItem.Status != ItemStatusOnSale {
+			outputErrorMsg(w, http.StatusForbidden, "item is not for sale")
+			tx.Rollback()
+			return
+		}
+
+		if targetItem.SellerID == buyer.ID {
+			outputErrorMsg(w, http.StatusForbidden, "自分の商品は買えません")
+			tx.Rollback()
+			return
+		}
+
+		log.Printf("select items for update: %s", time.Since(now))
+		now = time.Now()
+
+		wg := new(sync.WaitGroup)
+		var pstr *APIPaymentServiceTokenRes
+		wg.Add(1)
+		go func() {
+			pstr, err = APIPaymentToken(getPaymentServiceURL(), &APIPaymentServiceTokenReq{
+				ShopID: PaymentServiceIsucariShopID,
+				Token:  rb.Token,
+				APIKey: PaymentServiceIsucariAPIKey,
+				Price:  targetItem.Price,
+			})
+			wg.Done()
+		}()
+
+		seller := User{}
+		err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", targetItem.SellerID)
+		if err == sql.ErrNoRows {
+			outputErrorMsg(w, http.StatusNotFound, "seller not found")
+			tx.Rollback()
+			return
+		}
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		log.Printf("select users for update: %s", time.Since(now))
+		now = time.Now()
+
+		var scr *APIShipmentCreateRes
+		wg.Add(1)
+		go func() {
+			scr, err = APIShipmentCreate(getShipmentServiceURL(), &APIShipmentCreateReq{
+				ToAddress:   buyer.Address,
+				ToName:      buyer.AccountName,
+				FromAddress: seller.Address,
+				FromName:    seller.AccountName,
+			})
+			wg.Done()
+		}()
+
+		category, err := getCategoryByID(tx, targetItem.CategoryID)
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "category id error")
+			tx.Rollback()
+			return
+		}
+
+		result, err := tx.Exec("INSERT INTO `transaction_evidences` (`seller_id`, `buyer_id`, `status`, `item_id`, `item_name`, `item_price`, `item_description`,`item_category_id`,`item_root_category_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			targetItem.SellerID,
+			buyer.ID,
+			TransactionEvidenceStatusWaitShipping,
+			targetItem.ID,
+			targetItem.Name,
+			targetItem.Price,
+			targetItem.Description,
+			category.ID,
+			category.ParentID,
+		)
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		transactionEvidenceID, err := result.LastInsertId()
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		log.Printf("insert into transaction_evidences: %s", time.Since(now))
+		now = time.Now()
+
+		_, err = tx.Exec("UPDATE `items` SET `buyer_id` = ?, `status` = ?, `updated_at` = ? WHERE `id` = ?",
+			buyer.ID,
+			ItemStatusTrading,
+			time.Now(),
+			targetItem.ID,
+		)
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		log.Printf("update item: %s", time.Since(now))
+		now = time.Now()
+
+		wg.Wait()
+
+		log.Printf("wait for external calls: %s", time.Since(now))
+		now = time.Now()
+
+		/* if err != nil {
+			log.Print(err)
+			outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
+			tx.Rollback()
+
+			return
+		} */
+
+		/* if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "payment service is failed")
+			tx.Rollback()
+			return
+		} */
+
+		if pstr.Status == "invalid" {
+			outputErrorMsg(w, http.StatusBadRequest, "カード情報に誤りがあります")
+			tx.Rollback()
+			return
+		}
+
+		if pstr.Status == "fail" {
+			outputErrorMsg(w, http.StatusBadRequest, "カードの残高が足りません")
+			tx.Rollback()
+			return
+		}
+
+		if pstr.Status != "ok" {
+			outputErrorMsg(w, http.StatusBadRequest, "想定外のエラー")
+			tx.Rollback()
+			return
+		}
+
+		_, err = tx.Exec("INSERT INTO `shippings` (`transaction_evidence_id`, `status`, `item_name`, `item_id`, `reserve_id`, `reserve_time`, `to_address`, `to_name`, `from_address`, `from_name`, `img_binary`) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+			transactionEvidenceID,
+			ShippingsStatusInitial,
+			targetItem.Name,
+			targetItem.ID,
+			scr.ReserveID,
+			scr.ReserveTime,
+			buyer.Address,
+			buyer.AccountName,
+			seller.Address,
+			seller.AccountName,
+			"",
+		)
+		if err != nil {
+			log.Print(err)
+
+			outputErrorMsg(w, http.StatusInternalServerError, "db error")
+			tx.Rollback()
+			return
+		}
+
+		log.Printf("insert into shippings: %s", time.Since(now))
+		now = time.Now()
+
+		tx.Commit()
+
+		w.Header().Set("Content-Type", "application/json;charset=utf-8")
+		json.NewEncoder(w).Encode(resBuy{TransactionEvidenceID: transactionEvidenceID})
+	default:
 		outputErrorMsg(w, http.StatusForbidden, "item is not for sale")
-		tx.Rollback()
 		return
 	}
-
-	if targetItem.SellerID == buyer.ID {
-		outputErrorMsg(w, http.StatusForbidden, "自分の商品は買えません")
-		tx.Rollback()
-		return
-	}
-
-	seller := User{}
-	err = tx.Get(&seller, "SELECT * FROM `users` WHERE `id` = ? FOR UPDATE", targetItem.SellerID)
-	if err == sql.ErrNoRows {
-		outputErrorMsg(w, http.StatusNotFound, "seller not found")
-		tx.Rollback()
-		return
-	}
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
-
-	category, err := getCategoryByID(tx, targetItem.CategoryID)
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "category id error")
-		tx.Rollback()
-		return
-	}
-
-	result, err := tx.Exec("INSERT INTO `transaction_evidences` (`seller_id`, `buyer_id`, `status`, `item_id`, `item_name`, `item_price`, `item_description`,`item_category_id`,`item_root_category_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		targetItem.SellerID,
-		buyer.ID,
-		TransactionEvidenceStatusWaitShipping,
-		targetItem.ID,
-		targetItem.Name,
-		targetItem.Price,
-		targetItem.Description,
-		category.ID,
-		category.ParentID,
-	)
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
-
-	transactionEvidenceID, err := result.LastInsertId()
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
-
-	_, err = tx.Exec("UPDATE `items` SET `buyer_id` = ?, `status` = ?, `updated_at` = ? WHERE `id` = ?",
-		buyer.ID,
-		ItemStatusTrading,
-		time.Now(),
-		targetItem.ID,
-	)
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
-
-	scr, err := APIShipmentCreate(getShipmentServiceURL(), &APIShipmentCreateReq{
-		ToAddress:   buyer.Address,
-		ToName:      buyer.AccountName,
-		FromAddress: seller.Address,
-		FromName:    seller.AccountName,
-	})
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
-		tx.Rollback()
-
-		return
-	}
-
-	pstr, err := APIPaymentToken(getPaymentServiceURL(), &APIPaymentServiceTokenReq{
-		ShopID: PaymentServiceIsucariShopID,
-		Token:  rb.Token,
-		APIKey: PaymentServiceIsucariAPIKey,
-		Price:  targetItem.Price,
-	})
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "payment service is failed")
-		tx.Rollback()
-		return
-	}
-
-	if pstr.Status == "invalid" {
-		outputErrorMsg(w, http.StatusBadRequest, "カード情報に誤りがあります")
-		tx.Rollback()
-		return
-	}
-
-	if pstr.Status == "fail" {
-		outputErrorMsg(w, http.StatusBadRequest, "カードの残高が足りません")
-		tx.Rollback()
-		return
-	}
-
-	if pstr.Status != "ok" {
-		outputErrorMsg(w, http.StatusBadRequest, "想定外のエラー")
-		tx.Rollback()
-		return
-	}
-
-	_, err = tx.Exec("INSERT INTO `shippings` (`transaction_evidence_id`, `status`, `item_name`, `item_id`, `reserve_id`, `reserve_time`, `to_address`, `to_name`, `from_address`, `from_name`, `img_binary`) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-		transactionEvidenceID,
-		ShippingsStatusInitial,
-		targetItem.Name,
-		targetItem.ID,
-		scr.ReserveID,
-		scr.ReserveTime,
-		buyer.Address,
-		buyer.AccountName,
-		seller.Address,
-		seller.AccountName,
-		"",
-	)
-	if err != nil {
-		log.Print(err)
-
-		outputErrorMsg(w, http.StatusInternalServerError, "db error")
-		tx.Rollback()
-		return
-	}
-
-	tx.Commit()
-
-	w.Header().Set("Content-Type", "application/json;charset=utf-8")
-	json.NewEncoder(w).Encode(resBuy{TransactionEvidenceID: transactionEvidenceID})
 }
 
 func postShip(w http.ResponseWriter, r *http.Request) {
@@ -1613,6 +1676,11 @@ func postShip(w http.ResponseWriter, r *http.Request) {
 		tx.Rollback()
 
 		return
+	}
+	if shippingStatusCached, found := shippingStatusCache.Load(shipping.ReserveID); found {
+		shippingStatus := shippingStatusCached.(*APIShipmentStatusRes)
+		shippingStatus.Status = ShippingsStatusWaitPickup
+		shippingStatusCache.Store(shipping.ReserveID, shippingStatus)
 	}
 
 	_, err = tx.Exec("UPDATE `shippings` SET `status` = ?, `img_binary` = ?, `updated_at` = ? WHERE `transaction_evidence_id` = ?",
@@ -1735,6 +1803,7 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	shippingStatusCache.Delete(shipping.ReserveID)
 	ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
 		ReserveID: shipping.ReserveID,
 	})
@@ -1745,6 +1814,7 @@ func postShipDone(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	shippingStatusCache.Store(shipping.ReserveID, ssr)
 
 	if !(ssr.Status == ShippingsStatusShipping || ssr.Status == ShippingsStatusDone) {
 		outputErrorMsg(w, http.StatusForbidden, "shipment service側で配送中か配送完了になっていません")
@@ -1875,6 +1945,7 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	shippingStatusCache.Delete(shipping.ReserveID)
 	ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
 		ReserveID: shipping.ReserveID,
 	})
@@ -1885,6 +1956,7 @@ func postComplete(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	shippingStatusCache.Store(shipping.ReserveID, ssr)
 
 	if !(ssr.Status == ShippingsStatusDone) {
 		outputErrorMsg(w, http.StatusBadRequest, "shipment service側で配送完了になっていません")
@@ -2073,6 +2145,7 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Commit()
+	lock[itemID] = make(chan struct{}, 1)
 
 	if userSimpleCached, found := userSimpleCache.Load(seller.ID); found {
 		userSimple := userSimpleCached.(UserSimple)
